@@ -1,12 +1,77 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="CMakeRunConfigurationManager" shouldGenerate="true" shouldDeleteObsolete="true">
+    <generated />
+  </component>
   <component name="CMakeSettings">
     <configurations>
       <configuration PROFILE_NAME="Debug" CONFIG_NAME="Debug" />
     </configurations>
   </component>
+  <component name="ChangeListManager">
+    <list default="true" id="2498d110-0680-4f3f-a89e-da2ed6f7b17a" name="Default Changelist" comment="feat: 1">
+      <change afterPath="$PROJECT_DIR$/source/_posts/c语言/unix编程.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/_posts/article-title.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/_posts/blog搭建.md" beforeDir="false" afterPath="$PROJECT_DIR$/source/_posts/blog搭建.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/themes/next/_config.yml" beforeDir="false" afterPath="$PROJECT_DIR$/themes/next/_config.yml" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ClangdSettings">
+    <option name="formatViaClangd" value="false" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitToolBoxStore">
+    <option name="projectConfigVersion" value="2" />
+  </component>
+  <component name="ProjectId" id="1oYgGPh2vjBzQH8sARmbBy2JHrG" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
   <component name="PropertiesComponent">
+    <property name="RunOnceActivity.OpenProjectViewOnStart" value="true" />
+    <property name="RunOnceActivity.ShowReadmeOnStart" value="true" />
+    <property name="WebServerToolWindowFactoryState" value="false" />
+    <property name="cf.first.check.clang-format" value="false" />
+    <property name="last_opened_file_path" value="$PROJECT_DIR$" />
     <property name="nodejs_interpreter_path.stuck_in_default_project" value="undefined stuck path" />
     <property name="nodejs_npm_path_reset_for_default_project" value="true" />
+  </component>
+  <component name="SvnConfiguration">
+    <configuration />
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="2498d110-0680-4f3f-a89e-da2ed6f7b17a" name="Default Changelist" comment="" />
+      <created>1613468841440</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1613468841440</updated>
+      <workItem from="1613468842808" duration="1471000" />
+    </task>
+    <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="feat: 1" />
+    <option name="LAST_COMMIT_MESSAGE" value="feat: 1" />
+  </component>
+  <component name="WindowStateProjectService">
+    <state x="451" y="-739" key="#com.intellij.fileTypes.FileTypeChooser" timestamp="1613481186454">
+      <screen x="-295" y="-1080" width="1920" height="1080" />
+    </state>
+    <state x="451" y="-739" key="#com.intellij.fileTypes.FileTypeChooser/0.0.1440.900/-295.-1080.1920.1080@-295.-1080.1920.1080" timestamp="1613481186454" />
+    <state x="312" y="-1040" key="CommitChangelistDialog2" timestamp="1613468863294">
+      <screen x="-295" y="-1080" width="1920" height="1080" />
+    </state>
+    <state x="312" y="-1040" key="CommitChangelistDialog2/0.0.1440.900/-295.-1080.1920.1080@-295.-1080.1920.1080" timestamp="1613468863294" />
   </component>
 </project>

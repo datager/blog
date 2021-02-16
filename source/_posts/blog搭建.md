@@ -9,6 +9,8 @@ https://segmentfault.com/a/1190000017986794
 - 从这里下载next主题: https://stackoverflow.com/questions/63405693/hexo-cannot-display-next-theme
 ```c
 int main() {
-
+int a = 1;
+int b = 2;
+int c = a + b;
 }
 ```
