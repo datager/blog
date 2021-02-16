@@ -3,7 +3,7 @@
 ## Source: https://github.com/hexojs/hexo/
 
 # Site
-title: blog
+title: 新标签页
 subtitle: ""
 description: ""
 keywords:
@@ -52,7 +52,7 @@ highlight:
   wrap: true
   hljs: false
 prismjs:
-  enable: false
+  enable: true
   preprocess: true
   line_number: true
   tab_replace: ""

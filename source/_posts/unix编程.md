@@ -1,3 +1,8 @@
+---
+title: unix programing
+date: 2021-02-16 18:18:15
+tags:
+---
 [CLion工程中只能有一个main函数 &&怎么同时编写多个main函数的C文件](https://blog.csdn.net/justinzwd/article/details/85206640)
 ```makefile
 cmake_minimum_required(VERSION 3.13)
