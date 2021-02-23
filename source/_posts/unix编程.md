@@ -3419,93 +3419,1300 @@ Program terminated with signal SIGSEGV, Segmentation fault.
 
 ```
 
-### 信号的行为不可靠
+### 信号的行为不可靠与可重入函数
 
-因为信号是未知的突发情况, 而不是人为写的逻辑代码, 所以是内核布置的现场, 每次可能不一样, unix引入了一个链式结构解决了这个问题
+因为信号是未知的突发情况, 而不是人为写的逻辑代码, 所以是内核布置的现场, 每次可能不一样, 可能第一次调用还未结束就进行了第二次调用, 所以unix引入了`可重入函数`解决此问题
 
-### 可重入函数
+所有的系统调用都是可重入的, 部分库函数(如memcpy)是可重入的, 部分库函数(如rand, 因为rand的第n次调用的结果依赖于第n-1次的调用)是不可重入的, 一般函数末尾加`_r`(如rand_r, localtime_r, 尤其是返回值是指针的函数, 很容易是不可重入的, 那么人为指定指针地址就变成可重入的了)的就是可重入的.
 
 ### 信号的响应过程
 
+- 信号从收到到响应有一个不可避免的延迟:(eg下图)
+  - 每个进程有2个位图, 一个是mask bitmap, 一个是pending bitmap
+  - 进程收到信号后只是把pending bitmap的某信号位置位, 此时进程并不知道收到信号了
+  - 当进程遇到中断后, 进程带着 现场 做压栈(把用户态的栈压入内核态), 等待CPU的分时调度
+  - 当等待到CPU分时调度时, 进程才有机会计算信号(即用进程内的mask bitmap &&按位与 pending bitmap), 计算后进程才知道收到了SIGINT信号, 此时进程调用SIGINT信号绑定的int_handler()函数处理'
+
+```bash
+ mask 32bit          pending 32bit
+
++----------+       +---------+
+|          |       |         |
+|     1    |       |   0     |
++----------+       +---------|
+|    1     |       |  1 seted when recv SIGINT
+|          |       |         |
++----------+       +---------+
+|          |       |    0    |
+|    1     |       |         |
++----------+       +---------+
+|          |       |         |
+|    1     |       |    0    |
++----------+       +---------+
+|          |       |    0    |
+|    1     |       |         |
++----------+       +---------+
+|    1     |       |         |
+|          |       |         |        calc: mask bitmap && pending bitmap
+|          |       |    0    |
++----------+       +---------+                       ^                                            main    int_handler
+|          |       |         |                       |
+|     1    |       |    0    |       user space      |                                               +      +
+|          |       |         |                       |                                             * |      |
++----------+       +---------+        +---------------------------------------------+              * |      |
+                                                     |                                             * |      |
+                                     kernel space    |                                             * |      |
+                                                     |       thread saved stack                    * |      |
+                                                     |    +----------+                               |     !|
+                                                     |    |          |                             * |      |
+                                                     |    +----------+                               |      |
+                                                     +    |   addr   +-----------------------------> |      |
+                                                          +----------+                               |      |
+                                                          |          |                               v      v
+                                                          +----------+
+                                                                                                   *****^C!**
+
+```
+
+- 信号响应后(如下图)
+  - 把mask bitmap 对应位置位为0(表示正在执行信号处理函数int_handler, 防止此int_handler被后续其他信号处理函数打扰), pending bitmap 对应位置位为0(表示正在或已执行信号处理函数int_handler)
+  - 把压入kernel space的thread saved stack中运行到的addr由`main函数某行的指针`替换为`int_handler函数的第一行的指针`, 然后执行int_handler, 此时界面打印`!`
+  - 执行完int_handler()后, 把kernel space的thread saved stack中运行到的addr再替换回`main函数`, 并把mask bitmap的对应位置位为1(表示已执行完信号处理函数, 可以执行新的后续其他信号处理函数了), 然后接着执行main函数后面的部分, 打印后续的`***`
+
+```bash
+                mask 32bit          pending 32bit
+
+               +----------+       +---------+
+               |          |       |         |
+               |     1    |       |   0     |
+               +----------+       +---------+
+unset when processing sig handler |  0 unset when proessing sig handler
+               |    0     |       |         +
+               +----------+       +---------+
+               |          |       |    0    |
+               |    1     |       |         |
+               +----------+       +---------+
+               |          |       |         |
+               |    1     |       |    0    |
+               +----------+       +---------+
+               |          |       |    0    |
+               |    1     |       |         |
+               +----------+       +---------+
+               |    1     |       |         |
+               |          |       |         |        calc: mask bitmap && pending bitmap
+               |          |       |    0    |
+               +----------+       +---------+                       ^                                            main    int_handler
+               |          |       |         |                       |
+               |     1    |       |    0    |       user space      |                                               +      +<----------+
+               |          |       |         |                       |                                             * |      |           |
+               +----------+       +---------+        +---------------------------------------------+              * |      |           |
+                                                                    |                                             * |      |           |
+                                                    kernel space    |                                             * |      |           |
+                                                                    |       thread saved stack                    * |      |           |
+                                                                    |    +----------+                               |     !|           |
+                                                                    |    |          |                             * |      |           |
+                                                                    |    +----------+                               |      |           |
+                                                                    +    |   addr   +----------------+              |      |           |
+                                                                         +----------+                |              |      |           |
+                                                                         |          |                |              v      v           |
+                                                                         +----------+                |                                 |
+                                                                                                     |            *****^C!**           |
+                                                                                                     |                                 |
+                                                                                                     |                                 |
+                                                                                                     +---------------------------------+
+                                                                                           switch stack pointer to signal handler function
+
+```
+
+信号是从kernel回user的路上, 被响应的
+
+信号被IGNORE内部的原理就是把mask bitmap中对应的位置0实现的
+
+
+
+- 单信号响应过程
+  - M P
+  - 1 0 还未收到信号
+  - 1 1 收到信号后
+  - 0 0 开始执行信号
+  - 1 0 执行完信号
+- 多信号响应过程
+  - M P
+  - 1 0 还未收到信号
+  - 1 1 收到信号后
+  - 0 0 开始执行信号
+  - 0 1 此时又来了N多个SIGINT信号, 则Pending为又被set了N多次, 故pending为变为1了N多次
+  - 1 1 执行完信号变为11, 此时发现又有信号来了则继续执行
+  - 0 0 开始执行信号
+  - 1 0 执行完信号
+
+
+
+如何忽略掉一个信号?
+
+- 标准信号为什么要丢失?
+  - 因为是一个pending的位图, 如果来1w次相同的SIGINT信号, 还是只能在SIGINT位置位1次1
+
 ### 常用函数
 
-#### kill()
+- kill() 发信号
 
-#### Raise()
+- Raise() 自己给自己发
 
-#### alarm()
+- alarm() 闹钟计时发信号
 
-#### Pause()
+```c
+# include <stdio.h>
+# include <stdlib.h>
+# include <unistd.h>
 
-#### Abort()
+int main() {
+  alarm(5);
+  while(1);
+  exit(0);
+}
+```
 
-#### System()
+```bash
+ubuntu@k8s-wolf-minion-47:~$ ./alarm
+Alarm clock
+ubuntu@k8s-wolf-minion-47:~$ time ./alarm
+Alarm clock
 
-#### sleep()
+real	0m5.002s
+user	0m5.000s
+sys	0m0.000s
+```
+
+流量控制实验mycat(漏桶)
+
+```c
+# include <stdio.h>
+# include <stdlib.h>
+# include <errno.h>
+# include <sys/types.h>
+# include <sys/uio.h>
+# include <unistd.h>
+# include <fcntl.h>
+# include <signal.h>
+
+# define CPS 10
+# define BUFSIZE CPS // 速度, 即缓冲区大小
+
+static volatile int loop = 0;
+static void alrm_handler (int s) {
+  alarm(1);
+  loop = 1;
+}
+
+int main(int argc, char **argv) {
+  int sfd, dfd = 1; // dfd 为写向stdout
+
+  if (argc < 2) {
+    fprintf(stderr, "Usage: 2 args...");
+    exit(1);
+  }
+
+  signal(SIGALRM, alrm_handler);
+  alarm(1);
+
+  do {
+    sfd = open(argv[1], O_RDONLY);
+    if (sfd < 0) {
+      if (errno != EINTR) {
+        perror("open");
+        exit(1);
+      }
+    }
+  } while(sfd < 0);
+
+  char buf[BUFSIZE];
+  int readed = 0, writted = 0;
+  while(1) {
+    while(!loop)
+      pause();
+    loop = 0;
+
+    while (readed = read(sfd, buf, BUFSIZE) < 0) {
+      if (errno == EINTR)
+        continue;
+      perror("read fail");
+      break;
+    }
+    if (readed == 0) {
+      fprintf(stdout, "all readed done");
+      break;
+    }
+
+    int pos = 0;
+    int towrite = readed;
+    while(towrite > 0) {
+      writted = write(dfd, buf + pos, towrite);
+      if (writted < 0) {
+        if (errno == EINTR)
+          continue;
+        perror("write fail");
+        exit(1);
+      }
+
+      towrite -= writted;
+      pos += writted;
+    }
+    sleep(1);
+  }
+
+  close(sfd);
+  close(dfd);
+
+  exit(0);
+}
+```
+
+```bash
+ubuntu@k8s-wolf-minion-47:~$ ./slowcat /etc/services
+# Network services, Internet style
+#
+# Note that it is presently the p
+```
+
+- 令牌桶
+
+```c
+# include <stdio.h>
+# include <stdlib.h>
+# include <errno.h>
+# include <sys/types.h>
+# include <sys/uio.h>
+# include <unistd.h>
+# include <fcntl.h>
+# include <signal.h>
+
+# define CPS 10
+# define BUFSIZE CPS // 速度, 即缓冲区大小
+# define BURST 100
+
+static volatile int token = 0;
+static void alrm_handler (int s) {
+  alarm(1);
+  token++;
+  if (token > BURST)
+    token = BURST;
+}
+
+int main(int argc, char **argv) {
+  int sfd, dfd = 1; // dfd 为写向stdout
+
+  if (argc < 2) {
+    fprintf(stderr, "Usage: 2 args...");
+    exit(1);
+  }
+
+  signal(SIGALRM, alrm_handler);
+  alarm(1);
+
+  do {
+    sfd = open(argv[1], O_RDONLY);
+    if (sfd < 0) {
+      if (errno != EINTR) {
+        perror("open");
+        exit(1);
+      }
+    }
+  } while(sfd < 0);
+
+  char buf[BUFSIZE];
+  int readed = 0, writted = 0;
+  while(1) {
+    while(token <= 0)
+      pause();
+    tolen --;
+
+    while (readed = read(sfd, buf, BUFSIZE) < 0) {
+      if (errno == EINTR)
+        continue;
+      perror("read fail");
+      break;
+    }
+    if (readed == 0) {
+      fprintf(stdout, "all readed done");
+      break;
+    }
+
+    int pos = 0;
+    int towrite = readed;
+    while(towrite > 0) {
+      writted = write(dfd, buf + pos, towrite);
+      if (writted < 0) {
+        if (errno == EINTR)
+          continue;
+        perror("write fail");
+        exit(1);
+      }
+
+      towrite -= writted;
+      pos += writted;
+    }
+    sleep(1);
+  }
+
+  close(sfd);
+  close(dfd);
+
+  exit(0);
+}
+```
+
+- 把slowcat.c封装为一个库 https://www.cnblogs.com/muzihuan/p/5304757.html
+
+  ```bash
+         +----+----+----+----+----+----+ job[1024]
+         |  * | *  |    |    |    |    |
+         |    |    |    |    |    |    |
+         +-+--+-+--+----+----+----+----+
+           ^    ^
+           |    |
+           |    +----------------+
+  +--------+-+                 +----------+
+  |          |                 |  cps=50  |
+  | cps=10   |                 |          |
+  +----------+                 +----------+
+  |          |                 |          |
+  |          |                 |          |
+  | burst=100|                 |  burst=5000
+  |          |                 |          |
+  +----------+                 +----------+
+  |          |                 |          |
+  | token+=cps                 |  token+=cps
+  |          |                 |          |
+  +----------+                 +----------+
+  
+  ```
+
+  - Main.c
+
+  ```c
+  # include <stdio.h>
+  # include <stdlib.h>
+  # include <errno.h>
+  # include <sys/types.h>
+  # include <sys/uio.h>
+  # include <unistd.h>
+  # include <fcntl.h>
+  # include <signal.h>
+  # include <string.h>
+  # include "mytbf.h"
+  
+  # define CPS 10 // 速度, 即缓冲区大小
+  # define BUFSIZE 1024
+  # define BURST 100
+  
+  static volatile sig_atomic_t token = 0; // 对该值的改变(如++, --, +2), 会保证为原子操作
+  static void alrm_handler (int s) {
+    alarm(1);
+    token++;
+    if (token > BURST)
+      token = BURST;
+  }
+  
+  int main(int argc, char **argv) {
+    int sfd, dfd = 1; // dfd 为写向stdout
+  
+    printf("before sfd:%d", sfd);
+    if (argc < 2) {
+      fprintf(stderr, "Usage: 2 args...");
+      exit(1);
+    }
+  
+    mytbf_t *tbf = mytbf_init(CPS, BURST);
+    if (tbf == NULL) {
+      fprintf(stderr, "mytbf_init failed");
+      exit(1);
+    }
+  
+    do {
+      sfd = open(argv[1], O_RDONLY);
+      if (sfd < 0) {
+        if (errno != EINTR) {
+          perror("open");
+          exit(1);
+        }
+      }
+    } while(sfd < 0);
+  
+    printf("after sfd:%d", sfd);
+  
+    char buf[BUFSIZE];
+    int readed = 0, writted = 0;
+    while(1) {
+      int got_token_size = mytbf_fetchtoken(tbf, BUFSIZE);
+      if (got_token_size < 0) {
+        fprintf(stderr, "mytbf_ftchtoken(): %s\n", strerror(-got_token_size));
+        exit(1);
+      }
+  
+      while ((readed = read(sfd, buf, got_token_size)) < 0) {
+        if (errno == EINTR)
+          continue;
+        perror("read fail");
+        break;
+      }
+  
+      if (readed == 0) {
+        printf("read 0");
+        break;
+      }
+      printf("read some");
+  
+      // 归还用不完的token
+      if (got_token_size - readed > 0) {
+        mytbf_returntoken(tbf, got_token_size - readed);
+      }
+  
+      int pos = 0;
+      int towrite = readed;
+      while(towrite > 0) {
+        writted = write(dfd, buf + pos, towrite);
+        if (writted < 0) {
+          if (errno == EINTR)
+            continue;
+          perror("write fail");
+          exit(1);
+        }
+  
+        towrite -= writted;
+        pos += writted;
+      }
+      sleep(1);
+    }
+  
+    close(sfd);
+    mytbf_destroy(tbf);
+  
+    exit(0);
+  }
+  ```
+
+  - makefile
+
+  ```makefile
+  all:mytbf
+  mytbf: main.o mytbf.o
+  	gcc $^ -o $@
+  
+  clean:
+  	rm -rf *.o mytbf
+  ```
+
+  
+
+  - mytbf.c 
+
+  ```c
+  # include <stdio.h>
+  # include <unistd.h>
+  # include <stdlib.h>
+  # include <errno.h>
+  # include <signal.h>
+  # include "mytbf.h"
+  
+  typedef void (*sighandler_t)(int);
+  
+  static struct mytbf_st* job[MYTBF_MAX];
+  static int inited = 0;
+  static sighandler_t alrm_handler_save;
+  
+  struct mytbf_st {
+    int cps;
+    int burst;
+    int token;
+    int pos;
+  };
+  
+  static void alrm_handler(int s) {
+    int i = 0;
+    alarm(1);
+    for (i = 0; i< MYTBF_MAX; i++) {
+      if (job[i] != NULL) {
+        job[i]->token += job[i]->cps;
+        if (job[i]->token > job[i]->burst)
+          job[i]->token = job[i]->burst;
+      }
+    }
+  }
+  
+  static void module_unload(void) {
+    signal(SIGALRM, alrm_handler_save);
+    alarm(0);
+  int i = 0;
+    for (i = 0; i < MYTBF_MAX; i++)
+      free(job[i]);
+  }
+  
+  static void module_load(void) {
+    alrm_handler_save = signal(SIGALRM, alrm_handler);
+    alarm(1);
+  
+    atexit(module_unload); // 卸载模块 只被调用一次
+  }
+  
+  static int get_free_pos(void) {
+    int i = 0;
+  
+    for ( i = 0; i < MYTBF_MAX; i++) {
+      if (job[i] == NULL)
+        return i;
+    }
+    return -1;
+  }
+  
+  mytbf_t *mytbf_init(int cps, int burst) {
+    struct mytbf_st *me;
+  
+    if (!inited) {
+      module_load();
+      inited = 1;
+    }
+  
+    int pos = get_free_pos();
+    if (pos < 0)
+      return NULL;
+  
+    me = malloc(sizeof(*me));
+    if (me == NULL) {
+      return NULL;
+    }
+    me->token = 0;
+    me->cps = cps;
+    me->burst = burst;
+    me->pos = pos;
+  
+    job[pos] = me;
+  
+    return me;
+  }
+  
+  static int min(int a, int b) {
+    if (a < b)
+      return a;
+    return b;
+  }
+  
+  int mytbf_fetchtoken(mytbf_t *ptr , int size){
+    struct mytbf_st *me = ptr; // 空指针强转: 相当于interface{}的reflect
+    if (size <= 0)
+      return -EINVAL;
+    while(me->token <= 0) // 无token则阻塞, 当有token时会发signal, 则pause()的阻塞会被打破
+      pause();
+    int n = min(me->token, size);
+    me->token -= n;
+    return n;
+  }
+  
+  int mytbf_returntoken(mytbf_t *ptr, int size) {
+    struct mytbf_st *me = ptr;
+    if (size <= 0)
+      return -EINVAL;
+    me->token += size;
+    if (me->token > me->burst)
+      me->token = me->burst;
+    return size;
+  }
+  
+  int mytbf_destroy(mytbf_t *ptr) {
+    struct mytbf_st *me = ptr;
+    job[me->pos] = NULL;
+    free(ptr);
+    return 0;
+  }
+  ```
+
+  
+
+  - mytbf.h
+
+  ```c
+  # ifndef MYTBF_H__
+  # define MYTBF_H__
+  
+  # define MYTBF_MAX 1024
+  typedef void mytbf_t;
+  
+  mytbf_t *mytbf_init(int cps, int burst);
+  
+  int mytbf_fetchtoken(mytbf_t *, int);
+  
+  int mytbf_returntoken(mytbf_t *, int);
+  
+  int mytbf_destroy(mytbf_t *);
+  
+  # endif
+  ```
+
+  - make
+
+  ```bash
+  ubuntu@k8s-wolf-minion-47:~/signal$ make clean
+  rm -rf *.o mytbf
+  
+  
+  ubuntu@k8s-wolf-minion-47:~/signal$ make
+  cc    -c -o main.o main.c
+  cc    -c -o mytbf.o mytbf.c
+  gcc main.o mytbf.o -o mytbf
+  
+  
+  ubuntu@k8s-wolf-minion-47:~/signal$ ./mytbf /etc/services
+  # Network services, Internet style
+  #
+  # Note that it is prese^C
+  ```
+
+- 使用单一计时器实现计数, 5s后调函数f1("aaa"), 2s后调f2("bbb"), 7s后调函数f1("ccc"), 输出"Begin!End!..bbb...aaa...ccc....."
+
+  - main.c
+
+  ```c
+  # include <stdio.h>
+  # include <stdlib.h>
+  
+  static f1(void *p) {
+    printf("f1():%s\n", p); 
+  }
+  static f2(void *p) {
+    printf("f2():%s\n", p); 
+  }
+  ```
+
+  - anytimer.c
+
+  ```c
+  # include <stdio.h>
+  # include <stdlib.h>
+  
+  int main() {
+    puts("Begin");
+    int job1 = at_addjob(5, f1, "aaa");
+    if (job1 < 0) {
+      fprintf(stderr, "at_addjob():5s\n", strerror(-job1));
+      exit(1);
+    }
+    
+    int job2 = at_addjob(2, f2, "aaa");
+    if (job2 < 0) {
+      fprintf(stderr, "at_addjob():5s\n", strerror(-job2));
+      exit(1);
+    }
+    
+    int job3 = at_addjob(7, f1, "aaa");
+    if (job3 < 0) {
+      fprintf(stderr, "at_addjob():5s\n", strerror(-job3));
+      exit(1);
+    }
+  
+    puts("End!");
+  
+    while(1) {
+      write(1, "", 1);
+      sleep(1);
+    }
+  
+    exit(0);
+  }
+  ```
+
+  
+
+  - anytimer.h
+
+  ```c
+  # ifndef ANYTIMER_H__
+  # define ANYTIMER_H__
+  typedef void at_jobfunc_t(void*);
+  
+  #define JOB_MAX 1024
+  int at_addjob(int sec, at_jobfunc_t *jobp, void *arg);
+  /**
+  * return >= 0       成功, 返回任务ID
+  *        == -EINVAL 失败, 参数非法
+  * 			 == -ENOSPC 失败, 数组满
+  * 			 == -ENOMEM 失败, 内存空间不足
+  */
+  
+  int at_canceljob(int id);
+  /**
+  * return >= 0       		成功, 指定任务已取消
+  *        == -EINVAL 		失败, 参数非法
+  * 			 == -EBUSY  		失败, 指定任务已完成
+  * 			 == -ECANCELED  失败, 指定任务重复取消
+  */
+  
+  int at_waitjob(int id);
+  /**
+  * return == 0					成功, 指定任务成功释放
+  * 			 == -EINVAL 	失败, 参数非法
+  */
+  
+  // at_pausejob();
+  // at_resumejob();
+  
+  # endif
+  ```
+
+  
+
+  - makefile
+
+  ```bash
+  all:anytimer
+  mytbf: main.o mytbf.o
+  	gcc $^ -o $@
+  
+  clean:
+  	rm -rf *.o mytbf
+  ```
+
+  
+
+- setitimer(), 可替换链式alarm() https://blog.csdn.net/liuguanghui1988/article/details/6987611
+
+```c
+
+#include <unistd.h>
+#include <signal.h>
+#include <stdio.h>
+#include <errno.h>
+#include <sys/time.h>
+ 
+void alarm_handler(int sig)
+{   
+	printf("hello!--sig:%d\n",sig);
+}
+ 
+int main()
+{
+	 struct itimerval t;   
+	 /* 第一次执行前的时间间隔*/
+	 t.it_value.tv_usec = 0;   
+	 t.it_value.tv_sec = 3; 
+	 /* 以后每间再次执行的时间间隔*/
+	 t.it_interval.tv_usec = 0;    
+	 t.it_interval.tv_sec = 1;    
+	     
+	 if( setitimer(ITIMER_REAL, &t, NULL) < 0 ){
+	 	perror("settimer");        
+	 	return -1;    
+	 }
+	 if (signal( SIGALRM, alarm_handler) == SIG_ERR) {
+	 	perror("signal");
+	 	return -1;
+	}    
+	 while(1){        
+	 	pause();    
+	 }
+	return 0;
+
+```
+
+```bash
+ubuntu@k8s-wolf-minion-47:~$ ./1
+000hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+hello!--sig:14
+```
+
+
+
+- Pause()
+
+- Abort(): 结束自己 并 产生core dumped文件
+
+- system()
+
+- sleep(): linux是用nanosleep封装的, 但某些平台使用alarm + pause封装的, 但多个alarm会是程序出错, 故一般不用sleep
+  - 可用nanosleep, usleep代替
 
 ### 信号集
 
+- 信号集类型 sigset_t
+
+- sigemptyset()
+- sigfillset()
+- sigaddset()
+- sigdelset()
+- sigismember()
+
 ### 信号屏蔽字/pending集的处理
+
+- sigprocmask();
+
+```c
+# include <stdio.h>
+# include <stdlib.h>
+# include <signal.h>
+# include <unistd.h>
+
+static void int_handler(int s) {
+  write(1, "!", 1);
+}
+
+int main() {
+  int i, j;
+  sigset_t set, saveset;
+
+  signal(SIGINT, int_handler);
+  sigemptyset(&set);
+  sigaddset(&set, SIGINT);
+  sigprocmask(SIG_UNBLOCK, &set, &saveset); // 记录进此模块之前的saveset值以便后续恢复, 并按此模块业务逻辑初始化set为取消屏蔽信号
+
+  for (j = 0; i < 1000; j++) {
+    sigprocmask(SIG_BLOCK, &set, NULL); // 屏蔽信号
+    for (i = 0; i < 5; i++) {
+      write(1, "*", 1);
+      sleep(1);
+    }
+    write(1, "\n", 1);
+    sigprocmask(SIG_UNBLOCK, &set, NULL); // 解除信号的屏蔽
+  }
+  sigprocmask(SIG_SETMASK, &saveset, NULL); // 出模块后, 恢复为进此模块之前的saveset值
+
+  exit(0);
+}
+```
 
 ### 扩展
 
+用sigsetjump代替setjump, 用sitlongjump代替longjump, 可以在设置jump点是保存mask信息, 返回时能恢复掩码信息, 才能使得可以在signal_handler中向外跳转.
+
 #### sigsuspend()
 
-#### sigaction();
+- 原子操作, 用于做信号驱动程序
 
-#### Settitimer();
+```c
+# include <stdio.h>
+# include <stdlib.h>
+# include <signal.h>
+# include <unistd.h>
+
+static void int_handler(int s) {
+  write(1, "!", 1);
+}
+
+int main() {
+  int i, j;
+  sigset_t set, saveset, oset;
+
+  signal(SIGINT, int_handler);
+  sigemptyset(&set);
+  sigaddset(&set, SIGINT);
+  sigprocmask(SIG_UNBLOCK, &set, &saveset); // 记录进此模块之前的saveset值以便后续恢复, 并按此模块业务逻辑初始化set为取消屏蔽信号
+  sigprocmask(SIG_BLOCK, &set, &oset); // 屏蔽信号, 记录到oldset
+
+  for (j = 0; i < 1000; j++) {
+    for (i = 0; i < 5; i++) {
+      write(1, "*", 1);
+      sleep(1);
+    }
+    write(1, "\n", 1);
+
+    sigsuspend(&oset); // 原子操作: 解除屏蔽信号 + 恢复至oldset信号, 开始响应信号
+    /*
+    sigset_t tmpset;
+    sigprocmask(SIG_UNBLOCK, &oset, &tmpset); // 解除信号的屏蔽
+		pause();
+		sigprocmask(SIG_UNBLOCK, &tmpset, NULL); // 解除信号的屏蔽
+		*/
+  }
+  sigprocmask(SIG_SETMASK, &saveset, NULL); // 出模块后, 恢复为进此模块之前的saveset值
+
+  exit(0);
+}
+```
+
+
+
+#### sigaction()
+
+- 用于替代signal(), 更高级
+  - 多个信号都有相同的信号处理函数时, 响应一个信号时, 把其他信号先屏蔽
+  - 除了拿到信号, 还能拿到信号的来源(si_code), 如来自内核态or用户态or信号队列来的..., 可以做更精细的信号控制(例如只响应来自内核态的信号, 而忽略用户态的信号)
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <syslog.h>
+#include <signal.h>
+#define FNAME "/tmp/out"
+
+static int daemonize() {
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid > 0)  // parent
+    exit(0);
+
+  // ------以下为child------
+  // 重定向stdin, stdout, stderr
+  int fd = open("/dev/null", O_RDWR);
+  if (fd < 0) {
+    return -1;
+  }
+  dup2(fd, 0);
+  dup2(fd, 1);
+  dup2(fd, 2);
+  if (fd > 2)
+    close(fd);
+
+  setsid();
+
+  chdir("/");
+  umask(0);// 如果不产生文件的话, 可以关掉umask
+
+  return 0;
+}
+
+static FILE* fp; // 用于daemon_exit的关闭, 和main的打开
+static void daemon_exit(void) {
+  /*
+  if (s == SIGINT)
+    printf("SIGINT");
+  else if (s == SIGTERM)
+    printf("SIGTERM");
+  else if (s == SIGTERM)
+    printf("SIGTERM");
+  */
+  
+  fclose(fp);
+  closelog();
+	exit(0);
+}
+
+int main() {
+  struct sigaction sa;
+  sa.sa_handler = daemon_exit;
+  sigemptyset(sa.sa_mask);
+  sigaddset(&sa.sa_mask, SIGINT);
+  sigaddset(&sa.sa_mask, SIGQUIT);
+  sigaddset(&sa.sa_mask, SIGTERM);
+  sa.sa_flags = 0;
+  sigaction(SIGINT, &sa, NULL);
+  sigaction(SIGQUIT, &sa, NULL);
+  sigaction(SIGTERM, &sa, NULL);
+  
+//  signal(SIGNAL, daemon_exit);
+//  signal(SIGQUIT, daemon_exit);
+//  signal(SIGTERM, daemon_exit);
+  
+  openlog("mydaemon", LOG_PID, LOG_DAEMON);
+
+  if (daemonize()) {
+    syslog(LOG_ERR, "daemonize() failed!"); // 注意这里不要加\n, syslog自己控制格式
+    exit(1);
+  }
+  syslog(LOG_INFO, "daemonize() seccessed!");
+
+  fp = fopen(FNAME, "w");
+  if (fp == NULL) {
+    syslog(LOG_ERR, "fopen:%s", strerror(errno));
+    exit(1);
+  }
+  syslog(LOG_INFO, "%s was opened.", FNAME);
+
+  int i = 0;
+  for ( i = 0; ; i++) {
+    fprintf(fp, "%d", i);
+    fflush(fp);
+    syslog(LOG_DEBUG, "%d is printed.", i);
+    sleep(1);
+  }
+
+
+  exit(0);
+}
+```
+
+#### setitimer()
+
+- 用于替代alarm(), 更高级
+
+- 改版后的mytbf如下
+  - mytbf.c
+
+```c
+# include <stdio.h>
+# include <unistd.h>
+# include <stdlib.h>
+# include <errno.h>
+# include <signal.h>
+# include <sys/time.h>
+# include "mytbf.h"
+
+// typedef void (*sighandler_t)(int);
+
+static struct mytbf_st* job[MYTBF_MAX];
+static int inited = 0;
+// static sighandler_t alrm_handler_save;
+static struct sigaction alrm_sa_save;
+
+struct mytbf_st {
+  int cps;
+  int burst;
+  int token;
+  int pos;
+};
+
+static void alrm_action(int s, siginfo_t *infop, void *unuesd) {
+  int i = 0;
+  // alarm(1);
+  if(infop->si_code != SI_KERNEL) {
+    return;
+  }
+  
+  for (i = 0; i< MYTBF_MAX; i++) {
+    if (job[i] != NULL) {
+      job[i]->token += job[i]->cps;
+      if (job[i]->token > job[i]->burst)
+        job[i]->token = job[i]->burst;
+    }
+  }
+}
+
+static void module_unload(void) {
+//  signal(SIGALRM, alrm_handler_save);
+//  alarm(0);
+  
+  sigaction(SIGALRM, &alrm_sa_save, NULL);
+  
+  struct itimerval itv;
+  itv.it_interval.tv_sec = 0;
+  itv.it_interval.tv_usec = 0;
+  itv.it_value.tv_sec = 0;
+  itv.it_value.tv_usec = 1;
+  setitimer(ITIMER_REAL, &itv, NULL);
+  
+	int i = 0;
+  for (i = 0; i < MYTBF_MAX; i++)
+    free(job[i]);
+}
+
+static void module_load(void) {
+//  alrm_handler_save = signal(SIGALRM, alrm_handler);
+//  alarm(1);
+
+  struct sigaction sa;
+  sa.sa_sigaction = alrm_action;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_SIGINFO;
+  sigaction(SIGALRM, &sa, &alrm_sa_save);
+  
+  struct itimerval itv;
+  itv.it_interval.tv_sec = 1;
+  itv.it_interval.tv_usec = 0;
+  itv.it_value.tv_sec = 1;
+  itv.it_value.tv_usec = 1;
+  setitimer(ITIMER_REAL, &itv, NULL);
+  
+  atexit(module_unload); // 卸载模块 只被调用一次
+}
+
+static int get_free_pos(void) {
+  int i = 0;
+
+  for ( i = 0; i < MYTBF_MAX; i++) {
+    if (job[i] == NULL)
+      return i;
+  }
+  return -1;
+}
+
+mytbf_t *mytbf_init(int cps, int burst) {
+  struct mytbf_st *me;
+
+  if (!inited) {
+    module_load();
+    inited = 1;
+  }
+
+  int pos = get_free_pos();
+  if (pos < 0)
+    return NULL;
+
+  me = malloc(sizeof(*me));
+  if (me == NULL) {
+    return NULL;
+  }
+  me->token = 0;
+  me->cps = cps;
+  me->burst = burst;
+  me->pos = pos;
+
+  job[pos] = me;
+
+  return me;
+}
+
+static int min(int a, int b) {
+  if (a < b)
+    return a;
+  return b;
+}
+
+int mytbf_fetchtoken(mytbf_t *ptr , int size){
+  struct mytbf_st *me = ptr; // 空指针强转: 相当于interface{}的reflect
+  if (size <= 0)
+    return -EINVAL;
+  while(me->token <= 0) // 无token则阻塞, 当有token时会发signal, 则pause()的阻塞会被打破
+    pause();
+  int n = min(me->token, size);
+  me->token -= n;
+  return n;
+}
+
+int mytbf_returntoken(mytbf_t *ptr, int size) {
+  struct mytbf_st *me = ptr;
+  if (size <= 0)
+    return -EINVAL;
+  me->token += size;
+  if (me->token > me->burst)
+    me->token = me->burst;
+  return size;
+}
+
+int mytbf_destroy(mytbf_t *ptr) {
+  struct mytbf_st *me = ptr;
+  job[me->pos] = NULL;
+  free(ptr);
+  return 0;
+}
+```
+
+```bash
+ubuntu@k8s-wolf-minion-47:~/signal_sa$ ./mytbf /etc/services
+# Network services, Internet style
+#
+# Note that it is presently the policy of I
+
+# 另一个终端, 执行, 因为来自用户态, mytbf不会响应来自用户态的信号, 故不会干扰流量控制(流控)算法
+root@k8s-wolf-minion-47:~# while true; do kill -ALRM 140749; done
+```
 
 ### 实时信号
 
-## 通过多线程实现并发
+- 为了解决标准信号的问题(如未定义行为)
+
+  - 标准信号就是不排队, 就是会丢失; 而实时信号会排队则不会丢失
+
+    - 排队上显示ulimit -a 的 pending signal值
+
+    ```bash
+    root@k8s-wolf-minion-47:~# ulimit -a | grep pending
+    pending signals                 (-i) 257077
+    ```
+
+    
+
+```bash
+kill -l
+ubuntu@k8s-wolf-minion-47:~$ kill -l
+ 1) SIGHUP	 2) SIGINT	 3) SIGQUIT	 4) SIGILL	 5) SIGTRAP
+ 6) SIGABRT	 7) SIGBUS	 8) SIGFPE	 9) SIGKILL	10) SIGUSR1
+11) SIGSEGV	12) SIGUSR2	13) SIGPIPE	14) SIGALRM	15) SIGTERM
+16) SIGSTKFLT	17) SIGCHLD	18) SIGCONT	19) SIGSTOP	20) SIGTSTP
+21) SIGTTIN	22) SIGTTOU	23) SIGURG	24) SIGXCPU	25) SIGXFSZ
+26) SIGVTALRM	27) SIGPROF	28) SIGWINCH	29) SIGIO	30) SIGPWR
+31) SIGSYS	34) SIGRTMIN	35) SIGRTMIN+1	36) SIGRTMIN+2	37) SIGRTMIN+3
+38) SIGRTMIN+4	39) SIGRTMIN+5	40) SIGRTMIN+6	41) SIGRTMIN+7	42) SIGRTMIN+8
+43) SIGRTMIN+9	44) SIGRTMIN+10	45) SIGRTMIN+11	46) SIGRTMIN+12	47) SIGRTMIN+13
+48) SIGRTMIN+14	49) SIGRTMIN+15	50) SIGRTMAX-14	51) SIGRTMAX-13	52) SIGRTMAX-12
+53) SIGRTMAX-11	54) SIGRTMAX-10	55) SIGRTMAX-9	56) SIGRTMAX-8	57) SIGRTMAX-7
+58) SIGRTMAX-6	59) SIGRTMAX-5	60) SIGRTMAX-4	61) SIGRTMAX-3	62) SIGRTMAX-2
+63) SIGRTMAX-1	64) SIGRTMAX
+
+vim /usr/include/bits/.h
+```
+
+```c
+# include <stdio.h>
+# include <stdlib.h>
+# include <signal.h>
+# include <unistd.h>
+# define MYRTSIG (SIGRTMIN+6) // 挑选的一个实时信号
+
+static void mysig_handler(int s) {
+  write(1, "!", 1);
+}
+
+int main() {
+  int i, j;
+  sigset_t set, saveset, oset;
+
+  signal(MYRTSIG, mysig_handler);
+  sigemptyset(&set);
+  sigaddset(&set, SIGINT);
+  sigprocmask(SIG_UNBLOCK, &set, &saveset); // 记录进此模块之前的saveset值以便后续恢复, 并按此模块业务逻辑初始化set为取消屏蔽信号
+  sigprocmask(SIG_BLOCK, &set, &oset); // 屏蔽信号, 记录到oldset
+
+  for (j = 0; i < 1000; j++) {
+    for (i = 0; i < 5; i++) {
+      write(1, "*", 1);
+      sleep(1);
+    }
+    write(1, "\n", 1);
+
+    sigsuspend(&oset); // 原子操作: 解除屏蔽信号 + 恢复至oldset信号, 开始响应信号
+    /*
+    sigset_t tmpset;
+    sigprocmask(SIG_UNBLOCK, &oset, &tmpset); // 解除信号的屏蔽
+        pause();
+        sigprocmask(SIG_UNBLOCK, &tmpset, NULL); // 解除信号的屏蔽
+        */
+  }
+  sigprocmask(SIG_SETMASK, &saveset, NULL); // 出模块后, 恢复为进此模块之前的saveset值
+
+  exit(0);
+}
+```
+
+```bash
+ubuntu@k8s-wolf-minion-47:~$ ./susprt
+*****
 
 
+root@k8s-wolf-minion-47:~# ps -ef | grep susprt
+ubuntu   143479 140575  0 23:12 pts/7    00:00:00 ./susprt
 
+# 此时发多个实时信号
+root@k8s-wolf-minion-47:~# kill -40 143479
+root@k8s-wolf-minion-47:~# kill -40 143479
+root@k8s-wolf-minion-47:~# kill -40 143479
+root@k8s-wolf-minion-47:~# kill -40 143479
+root@k8s-wolf-minion-47:~# kill -40 143479
+root@k8s-wolf-minion-47:~# kill -40 143479
+root@k8s-wolf-minion-47:~# kill -40 143479
 
+# 多个实时信号都没丢失
+ubuntu@k8s-wolf-minion-47:~$ ./susprt
+*****
+!*****
+!**!*!**
+!*!*!***
+```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+- 多线程比信号好用得多, 先有标准再有事实
+- 信号处理是用于多进程并发的, 信号处理函数尽量少(避免可重入), 先有事实再有标准
 
 
 
